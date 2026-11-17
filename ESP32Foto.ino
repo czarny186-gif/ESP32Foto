@@ -58,76 +58,166 @@ public:
 };
 
 HosyondDisplay tft;
-std::vector<String> photos;
+
+struct Photo {
+  String path;
+  uint8_t turns = 0;
+  explicit Photo(const char* filePath) : path(filePath) {}
+};
+
+struct Rect {
+  int x, y, w, h;
+
+  bool contains(int px, int py) const {
+    return px >= x && px < x + w && py >= y && py < y + h;
+  }
+};
+
+enum class Action { Previous, RotatePhoto, RotateScreen, Reload, Next };
+
+Rect previewRect();
+Rect buttonRect(int index);
+void drawIcon(Action action, int x, int y, uint32_t color);
+void handleAction(Action action);
+
+std::vector<Photo> photos;
 size_t current = 0;
+uint8_t screenRotation = 1;
+
 constexpr int sdCs = 5;
 constexpr int backlight = 27;
-constexpr int toolbar = 48;
-constexpr int margin = 8;
-constexpr int header = 28;
-constexpr int rotation = 1; // Ustaw 3, jesli caly ekran jest obrocony o 180 stopni.
+constexpr int margin = 10;
+constexpr int header = 52;
+constexpr int footer = 59;
 constexpr uint32_t background = 0x0E1116;
 constexpr uint32_t panelColor = 0x1A1F27;
 constexpr uint32_t buttonColor = 0x262D38;
 constexpr uint32_t borderColor = 0x353E4C;
 constexpr uint32_t textColor = 0xE8ECF1;
-constexpr uint32_t accentColor = 0xF5A524;
+constexpr uint32_t muted = 0xA8B3C2;
+constexpr uint32_t accent = 0xF5A524;
 
-void drawToolbar() {
-  const int y = tft.height() - toolbar;
-  const int sectionWidth = tft.width() / 3;
-  const char* labels[] = {"< Wstecz", "Odswiez", "Dalej >"};
-  tft.fillRect(0, y, tft.width(), toolbar, background);
-  tft.setFont(&lgfx::fonts::Font2);
-  for (int i = 0; i < 3; ++i) {
-    const int x = sectionWidth * i + margin;
-    const int width = sectionWidth - 2 * margin;
-    const uint32_t fill = i == 2 ? accentColor : buttonColor;
-    tft.fillRoundRect(x, y + 4, width, 36, 10, fill);
-    tft.drawRoundRect(x, y + 4, width, 36, 10,
-                      i == 2 ? accentColor : borderColor);
-    tft.setTextColor(i == 2 ? background : textColor, fill);
-    tft.drawCentreString(labels[i], x + width / 2, y + 13);
+Rect previewRect() {
+  return {margin + 3, header + 3, tft.width() - 2 * (margin + 3),
+          tft.height() - header - footer - 6};
+}
+
+Rect buttonRect(int index) {
+  const int available = tft.width() - 2 * margin;
+  const int left = margin + available * index / 5;
+  const int right = margin + available * (index + 1) / 5;
+  return {left, tft.height() - footer + 3, right - left - 5, footer - 12};
+}
+
+void drawIcon(Action action, int x, int y, uint32_t color) {
+  switch (action) {
+    case Action::Previous:
+    case Action::Next: {
+      const int direction = action == Action::Previous ? -1 : 1;
+      tft.drawLine(x - 4 * direction, y - 5, x + 2 * direction, y, color);
+      tft.drawLine(x + 2 * direction, y, x - 4 * direction, y + 5, color);
+      break;
+    }
+    case Action::RotatePhoto:
+      tft.drawRect(x - 6, y - 2, 10, 8, color);
+      tft.drawLine(x - 3, y - 5, x + 6, y - 5, color);
+      tft.drawLine(x + 6, y - 5, x + 6, y, color);
+      tft.fillTriangle(x + 3, y - 1, x + 9, y - 1, x + 6, y + 2, color);
+      break;
+    case Action::RotateScreen:
+      tft.drawRoundRect(x - 7, y - 5, 14, 10, 2, color);
+      tft.drawLine(x - 3, y + 7, x + 3, y + 7, color);
+      tft.drawLine(x, y + 5, x, y + 7, color);
+      break;
+    case Action::Reload:
+      tft.drawCircle(x, y, 5, color);
+      tft.fillTriangle(x + 2, y - 6, x + 8, y - 5, x + 5, y - 1, color);
+      break;
   }
 }
 
-void startFrame() {
+void drawFrame() {
+  const int w = tft.width();
+  const int h = tft.height();
+
   tft.startWrite();
-  tft.fillRect(0, 0, tft.width(), header, background);
-  tft.fillRoundRect(margin, header, tft.width() - 2 * margin,
-                    tft.height() - header - toolbar, 12, panelColor);
-  tft.setFont(&lgfx::fonts::Font2);
-  tft.setTextColor(textColor, background);
-  tft.drawString("Zdjecia", margin, 5);
+  tft.fillRect(0, 0, w, header, background);
+  tft.fillRect(0, h - footer, w, footer, background);
+  tft.fillRoundRect(margin, header, w - 2 * margin, h - header - footer,
+                    12, panelColor);
+  tft.drawRoundRect(margin, header, w - 2 * margin, h - header - footer,
+                    12, borderColor);
+
+  tft.fillRoundRect(margin, 12, 4, 26, 2, accent);
+  tft.setFont(&lgfx::fonts::FreeSansBold18pt7b);
+  tft.setTextColor(textColor);
+  tft.drawString("Galeria", margin + 12, 8);
+
   if (!photos.empty()) {
     const String counter = String(current + 1) + " / " + String(photos.size());
-    tft.drawRightString(counter, tft.width() - margin, 5);
+    tft.fillRoundRect(w - margin - 108, 12, 108, 27, 9, buttonColor);
+    tft.setFont(&lgfx::fonts::FreeMonoBold9pt7b);
+    tft.setTextColor(accent);
+    tft.drawCentreString(counter, w - margin - 54, 18);
   }
-  drawToolbar();
+
+  const char* labels[] = {"Wstecz", "Obroc", "Ekran", "Karta", "Dalej"};
+  tft.setFont(&lgfx::fonts::FreeSans9pt7b);
+  for (int i = 0; i < 5; ++i) {
+    const Rect b = buttonRect(i);
+    const bool next = i == static_cast<int>(Action::Next);
+    const uint32_t fill = next ? accent : buttonColor;
+    const uint32_t ink = next ? background : textColor;
+    tft.fillRoundRect(b.x, b.y, b.w, b.h, 9, fill);
+    if (!next) tft.drawRoundRect(b.x, b.y, b.w, b.h, 9, borderColor);
+    drawIcon(static_cast<Action>(i), b.x + b.w / 2, b.y + 13, ink);
+    tft.setTextColor(ink);
+    tft.drawCentreString(labels[i], b.x + b.w / 2, b.y + 24);
+  }
   tft.endWrite();
 }
 
-void drawMessage(const char* message) {
-  tft.setTextColor(textColor, panelColor);
-  tft.drawCentreString(message, tft.width() / 2,
-                       (header + tft.height() - toolbar) / 2 - 8);
-}
-
-void showMessage(const char* message) {
-  startFrame();
-  drawMessage(message);
+void drawMessage(const char* title, const char* detail) {
+  const Rect p = previewRect();
+  const int x = p.x + p.w / 2;
+  const int y = p.y + p.h / 2;
+  tft.setFont(&lgfx::fonts::FreeSansBold12pt7b);
+  tft.setTextColor(textColor);
+  tft.drawCentreString(title, x, y - 22);
+  tft.setFont(&lgfx::fonts::FreeSans9pt7b);
+  tft.setTextColor(muted);
+  tft.drawCentreString(detail, x, y + 9);
 }
 
 void showPhoto() {
   const uint32_t start = millis();
-  startFrame();
-  File file = SD.open(photos[current].c_str());
-  const bool drawn = file && tft.drawJpg(&file, margin + 4, header + 4,
-      tft.width() - 2 * margin - 8, tft.height() - header - toolbar - 8,
+  drawFrame();
+  if (photos.empty()) {
+    drawMessage("Brak zdjec", "Wloz karte i dotknij Karta");
+    return;
+  }
+
+  const Photo& photo = photos[current];
+  File file = SD.open(photo.path.c_str());
+  Rect area = previewRect();
+  int width = tft.width();
+  int height = tft.height();
+  for (uint8_t turn = 0; turn < photo.turns; ++turn) {
+    area = {area.y, width - area.x - area.w, area.h, area.w};
+    std::swap(width, height);
+  }
+
+  // Obracamy adresowanie GRAM tylko na czas zapisu zdjecia.
+  // Przyciski pozostaja na miejscu, a dekoder nie potrzebuje bufora calej klatki.
+  if (photo.turns) tft.setRotation((screenRotation + photo.turns) & 3);
+  const bool drawn = file && tft.drawJpg(&file, area.x, area.y, area.w, area.h,
       0, 0, 0.0f, 0.0f, lgfx::datum_t::middle_center);
+  if (photo.turns) tft.setRotation(screenRotation);
   file.close();
+
   if (!drawn) {
-    showMessage("Blad odczytu. Zapisz plik jako JPEG baseline.");
+    drawFrame();
+    drawMessage("Blad odczytu JPG", "Uzyj formatu JPEG baseline");
     return;
   }
   Serial.printf("JPEG: %lu ms\n", static_cast<unsigned long>(millis() - start));
@@ -138,16 +228,16 @@ void reloadCard() {
   current = 0;
   SD.end();
   if (!SD.begin(sdCs, SPI, 20000000) && !SD.begin(sdCs, SPI, 4000000)) {
-    showMessage("Sprawdz karte microSD (FAT32).");
+    drawFrame();
+    drawMessage("Brak karty microSD", "Sprawdz karte FAT32");
     return;
   }
 
   File directory = SD.open("/zdjecia");
+  if (!directory || !directory.isDirectory()) directory = SD.open("/");
   if (!directory || !directory.isDirectory()) {
-    directory = SD.open("/");
-  }
-  if (!directory || !directory.isDirectory()) {
-    showMessage("Nie mozna otworzyc folderu na karcie.");
+    drawFrame();
+    drawMessage("Blad katalogu", "Sprawdz pliki na karcie");
     return;
   }
 
@@ -155,32 +245,55 @@ void reloadCard() {
     File file = directory.openNextFile();
     if (!file) break;
     if (!file.isDirectory()) {
-      String extension = file.name();
-      extension.toLowerCase();
-      if (extension.endsWith(".jpg") || extension.endsWith(".jpeg")) {
+      String name = file.name();
+      name.toLowerCase();
+      if (name.endsWith(".jpg") || name.endsWith(".jpeg")) {
         photos.emplace_back(file.path());
       }
     }
   }
   directory.close();
 
-  if (photos.empty()) {
-    showMessage("Brak plikow JPG lub JPEG.");
-    return;
-  }
+  std::sort(photos.begin(), photos.end(), [](const Photo& a, const Photo& b) {
+    return a.path < b.path;
+  });
+  showPhoto();
+}
 
-  std::sort(photos.begin(), photos.end());
+void handleAction(Action action) {
+  switch (action) {
+    case Action::RotateScreen:
+      screenRotation = (screenRotation + 1) & 3;
+      // LovyanGFX przelicza getTouch() wedlug tej samej orientacji panelu.
+      tft.setRotation(screenRotation);
+      tft.fillScreen(background);
+      break;
+    case Action::Reload:
+      reloadCard();
+      return;
+    case Action::RotatePhoto:
+      if (photos.empty()) return;
+      photos[current].turns = (photos[current].turns + 1) & 3;
+      break;
+    case Action::Previous:
+      if (photos.empty()) return;
+      current = (current + photos.size() - 1) % photos.size();
+      break;
+    case Action::Next:
+      if (photos.empty()) return;
+      current = (current + 1) % photos.size();
+      break;
+  }
   showPhoto();
 }
 
 void setup() {
   Serial.begin(115200);
   tft.init();
-  tft.setRotation(rotation);
+  tft.setRotation(screenRotation);
   tft.fillScreen(background);
   pinMode(backlight, OUTPUT);
   digitalWrite(backlight, HIGH);
-
   SPI.begin(18, 19, 23, sdCs);
   reloadCard();
 }
@@ -191,16 +304,12 @@ void loop() {
   const bool pressed = tft.getTouch(&x, &y);
   const bool tapped = pressed && !wasPressed;
   wasPressed = pressed;
-
-  if (tapped && y >= tft.height() - toolbar) {
-    const int section = 3 * x / tft.width();
-    if (section == 1) {
-      reloadCard();
-    } else if (!photos.empty()) {
-      current = section == 0
-                  ? (current + photos.size() - 1) % photos.size()
-                  : (current + 1) % photos.size();
-      showPhoto();
+  if (tapped) {
+    for (int i = 0; i < 5; ++i) {
+      if (buttonRect(i).contains(x, y)) {
+        handleAction(static_cast<Action>(i));
+        break;
+      }
     }
   }
   delay(25);
